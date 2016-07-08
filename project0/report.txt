@@ -1,0 +1,5 @@
+Author:      Joel Benner
+Assignment:  Project 0
+Date:        4/11/2016
+
+I was only able to implement the BST but everything should work perfectly. On my computer I came across no compile errors or differences in results.

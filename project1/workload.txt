@@ -1,0 +1,9 @@
+sleep 3
+ls -l
+sleep 10
+date
+sleep 7
+echo "For Narnia!"
+sleep 13
+free
+sleep 8

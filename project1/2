@@ -1,0 +1,483 @@
+#include <signal.h>
+#include <string.h> 
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <pthread.h>
+#include <unistd.h>
+#include "p1fxns.h"
+#include "usps.h"
+
+#define DEFAULT_ARGS         30
+#define DEFAULT_EXEC_TIME    1
+#define BUFF_SIZE            2048
+
+struct node {
+    Node *next;
+    Proc *process;
+};
+
+struct linkedList {
+    Node *head;
+};
+
+
+struct proc {
+    int *pid;
+    char *command_line;
+    char **arguments;
+    char *program;
+}; 
+
+int sig_received = 0;
+
+LinkedList *create_list ( ) {
+    LinkedList *ll = (LinkedList*)malloc( sizeof( LinkedList ) );
+    ll->head = NULL;
+    return ll;
+}
+
+
+void add_node ( LinkedList *list, Proc *process) {
+    if (list == NULL ) {
+        printf( "ERROR LIST IS NULL" );
+        return;
+    }
+
+    printf( "parent process pid: %d\n", process->pid);
+    printf( "Process Program %s\n", process->program );
+    
+    int r;
+    for ( r = 0; process->arguments[r] != NULL; r++ )
+        printf( "Process arguments[%d] %s\n", r, process->arguments[r] );
+    
+
+    Node *newNode = (Node*)malloc( sizeof( Node ) );
+    newNode->process = process;
+    
+    //print_process_overview ( process, "AddNode" );
+    
+    newNode->next = NULL;
+
+    if (list->head == NULL ) {
+        list->head = newNode;
+        return;
+    }
+
+    Node *temp = list->head;
+    while( temp->next != NULL ) {
+        temp = temp->next;
+    }
+    temp->next = newNode;
+}
+
+
+Node *get_node( LinkedList *list, int count ) {
+    int i;
+    Node *temp = list->head;
+    for ( i = 0; i < count; i++ ) {
+        if ( temp->next == NULL ) {
+            printf( " NEXT SHOULD NOT BE NULL" );
+            return;
+        }
+        temp = temp->next;
+    }
+    return temp;
+}
+
+
+int list_length( LinkedList *list ) {
+    if (list == NULL ) {
+        printf( "LENGTH: LIST SHOULD NOT BE NULL" );
+        return 0;
+    }
+    int count = 0;
+    Node *temp = list->head;
+
+    while ( temp->next != NULL ) {
+        count ++;
+        temp = temp->next;
+    }
+    return count;
+}
+
+
+Proc *create_proc( ) {
+    Proc* process = (Proc*)malloc( sizeof( Proc ) );
+   
+    process->pid          = NULL;
+    process->command_line = NULL;
+    process->arguments    = NULL;
+    process->program      = NULL;
+    
+    process->arguments = (char**)malloc( DEFAULT_ARGS * sizeof( char*) );
+
+    return process;
+}
+
+
+void print_process_overview ( Proc *process, char type[] ) {
+    printf( "**\n\n%s Process Overview**\n\n", type );
+    printf( "process->pid = %d\n", process->pid);
+    printf( "process->command_line = %s\n", process->command_line);
+    int r;
+    for ( r = 0; process->arguments[r] != NULL; r++ )
+        printf( "Process arguments[%d] %s\n", r, process->arguments[r] );
+    printf( "process->program = %s\n", process->program);
+    printf( "** End Overview **\n\n" );
+}
+
+
+void prepare_argument_structure( Proc *process) {
+    char program[BUFF_SIZE], argument[BUFF_SIZE];
+    char *line = process->command_line;
+
+    //set programs and arguments arrays
+    int start = 0;
+    int i = 0;
+    process->program = p1strdup( program );
+    
+    int next = p1getword( line, start, argument );
+    while ( next != -1 ) {
+        //printf( "arg %s\n", argument );
+        process->arguments[i] = p1strdup( argument );
+        
+        start += next;
+        next = p1getword( line, start, argument );
+        i++;
+    }
+    process->program = process->arguments[0];
+    //print_process_overview( process, "Parent" );
+}
+
+//returns a char* with a word at each index of line, 
+//while line[i] != NULL keep getting commands
+char * get_line( ) {
+    char *line = (char *)malloc( BUFF_SIZE * sizeof( char ) );
+    int x = p1getline(0, line, BUFF_SIZE);
+
+    if ( x == 0 ) 
+        return NULL;
+       
+    line[x-1] = '\0';
+    
+    return line;
+}
+
+
+void destroy_line( char *line ) {
+    free ( line );
+}
+
+void destroy_single_node ( Node *node ) { // We use this to delete the next node in RoundRobin, careful with this destroy
+
+    if ( node->process != NULL ) {
+        destroy_process ( node->process );
+        node->process == NULL;
+    }
+    
+    node->next = NULL;
+
+    free ( node );
+}
+
+
+void destroy_nodes( Node *node ) {
+
+    if ( node->next != NULL ) {
+         destroy_nodes( node->next );
+         node->next = NULL;
+    }
+
+    if ( node->process != NULL ) {
+        destroy_process( node->process );
+        node->process = NULL;
+    }
+
+    free ( node );
+}
+
+void destroy_list ( LinkedList *list ) {
+    if ( list->head != NULL)
+        if ( list->head->next != NULL ) {
+             destroy_nodes( list->head->next );
+            list->head->next = NULL;
+        }
+    free ( list );
+       
+}
+
+
+void destroy_process ( Proc *proc ) {
+    int i;
+    if ( proc != NULL ) {
+        if ( proc->pid != NULL ) {
+            proc->pid = NULL;
+        }
+
+        if ( proc->program != NULL ) {
+            proc->program = NULL;
+        }
+
+        if ( proc->arguments != NULL ) {
+            // free all pointer in arguments
+            for ( i = 0; i < DEFAULT_ARGS ; i++ ) { 
+                if (proc->arguments[i] != NULL )
+                    free( proc->arguments[i] );
+            }
+            proc->arguments = NULL;
+            free( proc->arguments );
+        }
+
+        if ( proc->command_line != NULL ) {
+            proc->command_line = NULL;
+        }
+    }
+    free( proc );
+}
+
+
+void sig_alarm_handler( int signo ) {
+    // reset alarm
+        signal( SIGALRM, sig_alarm_handler );
+}
+
+
+void sig_handler( int signo ) {
+    //printf("signo: %d  SIGUSR1: %d\n", signo, SIGUSR1 );   // prints 10
+    if ( signo == SIGUSR1) {
+        sig_received++;
+        //printf("Sig_handler getpid(): %d\n", getpid() );
+        //printf("SIGUSR1 Received %d\n", signo );
+    }
+}
+
+int is_process_completed( Proc *process ) {
+    int childStatus, status;
+
+    childStatus = waitpid( process->pid, &status, WNOHANG );
+    printf( "childStatus: %d\n", childStatus );
+    if ( childStatus == 0 ) 
+        return 0;
+    else
+        return 1;
+}
+
+
+void execute_child_process ( Proc *process, sigset_t signal_set, int sig_ret ) {
+    /*sigset_t signal_set;
+    int sig_ret;
+    
+    sigemptyset( &signal_set);
+    sigaddset( &signal_set, SIGUSR1 );
+    sigprocmask( SIG_BLOCK, &signal_set, NULL);
+    */
+    printf( "Executing Child...\n" ); 
+    int test;
+
+    test = sigwait( &signal_set, &sig_ret );
+
+    //printf( "sigwait returns %d. ", test );
+    //printf( "Got signal %d\n", sig_ret );
+    
+    execvp(process->program, process->arguments );
+
+    p1putstr( 1, "Child Process Completed" );
+    exit( 0 );
+}
+
+
+void execute_process( Proc * process, double sleepTime  ) {
+   kill( process->pid, SIGCONT ); //continue process
+   signal( SIGALRM, sig_alarm_handler )   ;
+ 
+   if ( sleepTime < 1 ) 
+       ualarm( ( int )(sleepTime * 1000000) % 1000000, 0 ); // if time is less than 1 use modulo to find how long to sleep
+   else
+        alarm( sleepTime ); // else set alarm for sleepTime amount of seconds
+
+   pause(); //pause until process is stopped
+
+   kill( process->pid, SIGSTOP ); // stop process
+
+}
+
+
+void create_circular_list ( LinkedList *list ) {
+    Node *temp = list->head;
+    
+    while( temp->next != NULL ) {
+        temp = temp->next;
+    } // temp is now last node
+    
+    temp->next = list->head; // connect link making a circle
+
+}
+
+
+void round_robin_scheduling( LinkedList *list, int processCount )  {
+    int j;
+    //cycle through and start processes immediately then stop them for round robin scheduling
+    for ( j = 0; j <= list_length( list ); j++ ) {
+        Node *killNode = get_node( list, j );
+        kill ( killNode->process->pid, SIGUSR1 );
+        printf( "KillNode process->pid: %d\n", killNode->process->pid );
+        //kill ( killNode->process->pid, SIGSTOP ); // do we want to stop them right after or after all are running
+    }
+    int k; 
+    for ( k = 0; k <= list_length( list ); k++ ) {
+        Node *killNode2 = get_node( list, k );
+        kill ( killNode2->process->pid, SIGSTOP ); // do we want to stop them right after or after all are running
+    }
+    
+    create_circular_list ( list );
+
+    if ( processCount != 0 ) {
+        p1putstr( 1, "------begin round robin-------\n\n" );
+    }
+
+    Node *currNode = list->head;
+    
+    
+    // while there are still have processes running
+    while ( processCount > 0 ) {
+        // look ahead to see if next process is completed
+        
+        while ( is_process_completed( currNode->next->process  ) != 0 && processCount > 0 ) { // Not running
+            Node *finishedNode = currNode->next;
+            //p1putstr( 1, "creating finished node\n" );
+            
+            //print_process_overview( finishedNode->process, "Round Robin" );
+
+            currNode->next = finishedNode-> next;
+
+            // if head node finished, set next node to be head node
+            if (list->head->next == list->head )
+                printf( "ITS A TRAP");
+
+            if ( finishedNode->process->pid == list->head->process->pid );
+                list->head = list->head->next;
+
+            
+            
+            destroy_single_node( finishedNode ); //free finished process
+
+            processCount--; // decrease processCount
+            
+            printf( "\nProcessCount %d\n" , processCount );
+        }
+      
+     
+        if ( processCount > 0 ) {
+            p1putstr( 1, "-----Starting Process----- \n" );
+            p1putint( 1, currNode->process->pid );
+            
+            //printf( "\ncurrNode->process->program = %s\n", currNode->process->program );
+            execute_process( currNode->process, DEFAULT_EXEC_TIME );
+        
+            p1putstr( 1, "\n-----Ending  Process------ \n\n" );
+         
+            // if at end of list reset
+            currNode = currNode->next;
+        }
+    }
+}
+
+int main ( int argc, char* argv[] ) {
+    /* Initialize some values at the start   | i and j used */
+    LinkedList *LList;
+    Proc *process = NULL;
+    int i;
+    int childProcessPid;
+    LList = create_list();  // create linked list
+    sigset_t signal_set;
+    int sig_ret;
+    
+    sigemptyset( &signal_set);
+    sigaddset( &signal_set, SIGUSR1 );
+    sigprocmask( SIG_BLOCK, &signal_set, NULL);
+    
+    if( signal( SIGUSR1, sig_handler ) == SIG_ERR ) {
+        p1putstr(1, "can't catch SIGUSR1" );
+        return 1;
+    }
+    
+    char *line = get_line();
+    for (i = 0; line != NULL; i++ ) {
+        process = create_proc();
+        process->command_line = line;
+        prepare_argument_structure( process ); // used to be right above execute child process8
+        process->pid = fork();  
+        process->pid != 0  ? printf( "This pid= %d\n", process->pid ):printf( " ") ;
+        if ( process->pid == 0 ) {
+            // child process starts here
+            sig_handler( SIGUSR1 ); 
+            while ( ! sig_received )  //will be zero until sig_handler is run
+                sleep(1);
+            //prepare_argument_structure( process );
+    
+            //print_process_overview( process, "Child" ); // prints process attrs
+
+            signal( SIGUSR1, sig_handler );
+            execute_child_process( process, signal_set, sig_ret ); // stuck in here, process not being created correctly
+            // child process ends here
+        }
+        
+        else if ( process->pid < 0 ) {
+            perror( "fork" );
+            p1putstr( 1, "ERROR: BAD PID" );
+            return;
+        }
+        
+        //parent continue
+        
+        
+        add_node( LList, process );
+
+        destroy_line( line ); 
+        
+        line = get_line(); //Parents are fine, they have all the requirements for addNode
+        
+        printf( "End of For Loop\n \n" );
+    }
+    // send Signal to each child process to continue
+    //printf( "Node pid: %d\n", temp->process->pid );
+    sleep(1);
+    
+    round_robin_scheduling( LList, list_length( LList ) ); //Nodes are fine going into RRS
+
+    printf( "Round Robin Finished \n" );
+    
+    destroy_line ( line );
+    printf( "Post Destroy Line\n");
+    destroy_list ( LList );
+    printf( "End of Code\n" );
+}
+    
+
+/*
+
+-----------------------------------------------------------------------------
+
+    char *line = get_line();
+
+    process = create_proc();
+    process->command_line = line;
+    prepare_argument_structure( process ); // used to be right above execute child process8
+    process->pid = fork();  
+    if( process->pid == 0 ) {
+        //cycle through and start processes immediately then stop them for round robin scheduling
+        printf( "Child getpid(): %d\n", getpid() );
+        signal( SIGUSR1, sig_handler );
+        execute_child_process( process );
+
+        printf( "Past EXEC_CHIL_PROCS!!");
+    }
+    printf( "child process pid: %d\n", process->pid );
+    printf( "parent process getpid(): %d\n", getpid() );
+    kill ( process->pid, SIGUSR1 );
+    printf( "Process Killed\n" );
+*/
+
+
+

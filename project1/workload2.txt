@@ -1,0 +1,5 @@
+cd ../project0
+sleep 20
+gcc -c date.c tldlist.c -o dateTest
+sleep 40
+./dateTest 01/01/2002 01/09/2002 small.txt
